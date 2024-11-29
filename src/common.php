@@ -13,6 +13,11 @@ use think\Loader;
 use think\Response;
 use think\Route;
 
+if (!defined('ROOT_PATH') && is_file(dirname(__DIR__, 4) . '/vendor/autoload.php')) {
+    define('ROOT_PATH', dirname(__DIR__, 4));
+}
+!defined('DS') && define('DS', DIRECTORY_SEPARATOR);
+
 // 插件目录
 define('ADDON_PATH', ROOT_PATH . 'addons' . DS);
 
