@@ -3,7 +3,6 @@
     "description": "addons package for fastadmin",
     "homepage": "https://github.com/karsonzhang/fastadmin-addons",
     "license": "Apache-2.0",
-    "version": "1.4.0",
     "authors": [
         {
             "name": "Karson",
@@ -19,6 +18,7 @@
     },
     "require": {
         "php": ">=7.0.0",
+        "topthink/framework": "~5.0",
         "nelexa/zip": "^3.3 || ^4.0"
     },
     "autoload": {
@@ -33,5 +33,10 @@
         "think-config": {
             "addons": "src/config.php"
         }
+    },
+    "scripts": {
+        "pre-autoload-dump": [
+            "composer dump-autoload -o"
+        ]
     }
 }
