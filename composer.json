@@ -1,9 +1,9 @@
 {
-    "name": "karsonzhang/fastadmin-addons",
+    "name": "fastadminnet/fastadmin-addons",
     "description": "addons package for fastadmin",
-    "homepage": "https://github.com/karsonzhang/fastadmin-addons",
+    "homepage": "https://github.com/fastadminnet/fastadmin-addons",
     "license": "Apache-2.0",
-    "version": "1.4.0",
+    "version": "1.4.1",
     "authors": [
         {
             "name": "Karson",
@@ -15,7 +15,7 @@
         }
     ],
     "support": {
-        "issues": "https://github.com/karsonzhang/fastadmin-addons/issues"
+        "issues": "https://github.com/fastadminnet/fastadmin-addons/issues"
     },
     "require": {
         "php": ">=7.0.0",

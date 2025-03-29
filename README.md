@@ -6,3 +6,6 @@ http://doc.fastadmin.net/docs/addons.html
 
 ## 特别感谢
 https://github.com/5ini99/think-addons
+
+## 开源协议
+Apache License 2.0
