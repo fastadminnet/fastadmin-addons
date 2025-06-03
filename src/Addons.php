@@ -215,6 +215,14 @@ abstract class Addons
     }
 
     /**
+     * 检测环境
+     * @return void
+     */
+    public function checkEnv() {
+
+    }
+
+    /**
      * 加载模板和页面输出 可以返回输出内容
      * @access public
      * @param string $template 模板文件名或者内容

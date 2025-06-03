@@ -206,6 +206,9 @@ class Service
             $extend['data'] = $zip->getArchiveComment();
             $extend['unknownsources'] = config('app_debug') && config('fastadmin.unknownsources');
             $extend['faversion'] = config('fastadmin.version');
+            $extend['phpversion'] = PHP_VERSION;
+            $mysqlVersion = Db::query('SELECT version() AS version');
+            $extend['mysqlversion'] = $mysqlVersion[0]['version'] ?? '';
 
             $params = array_merge($config, $extend);
 
@@ -300,6 +303,10 @@ class Service
         $addon = new $addonClass();
         if (!$addon->checkInfo()) {
             throw new Exception("The configuration file content is incorrect");
+        }
+        // 检测环境
+        if (method_exists($addon, 'checkEnv')) {
+            $addon->checkEnv();
         }
         return true;
     }
@@ -423,6 +430,9 @@ EOD;
         }
 
         $extend['domain'] = request()->host(true);
+        $extend['phpversion'] = PHP_VERSION;
+        $mysqlVersion = Db::query('SELECT version() AS version');
+        $extend['mysqlversion'] = $mysqlVersion[0]['version'] ?? '';
 
         // 远程下载插件
         $tmpFile = $tmpFile ?: Service::download($name, $extend);
