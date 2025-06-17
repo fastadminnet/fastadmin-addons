@@ -63,7 +63,7 @@ class Controller extends \think\Controller
      * @param Request $request Request对象
      * @access public
      */
-    public function __construct(Request $request = null)
+    public function __construct(?Request $request = null)
     {
         if (is_null($request)) {
             $request = Request::instance();

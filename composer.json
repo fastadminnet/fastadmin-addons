@@ -18,7 +18,7 @@
         "issues": "https://github.com/fastadminnet/fastadmin-addons/issues"
     },
     "require": {
-        "php": ">=7.0.0",
+        "php": ">=7.1.0",
         "nelexa/zip": "^3.3 || ^4.0"
     },
     "autoload": {
