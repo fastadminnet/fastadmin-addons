@@ -1,21 +1,17 @@
 {
-    "name": "fastadminnet/fastadmin-addons",
-    "description": "addons package for fastadmin",
-    "homepage": "https://github.com/fastadminnet/fastadmin-addons",
+    "name": "frank6com/fastadmin-addons",
+    "description": "fork from fastadminnet/fastadmin-addons",
+    "homepage": "https://github.com/frank6com/fastadmin-addons",
     "license": "Apache-2.0",
     "version": "1.4.4",
     "authors": [
         {
-            "name": "Karson",
-            "email": "karson@fastadmin.net"
-        },
-        {
-            "name": "xiaobo.sun",
-            "email": "xiaobo.sun@qq.com"
+            "name": "Frank6",
+            "email": "auv@auv.me"
         }
     ],
     "support": {
-        "issues": "https://github.com/fastadminnet/fastadmin-addons/issues"
+        "issues": "https://github.com/frank6com/fastadmin-addons/issues"
     },
     "require": {
         "php": ">=7.1.0",
@@ -33,5 +29,11 @@
         "think-config": {
             "addons": "src/config.php"
         }
+    },
+    "replace": {
+        "fastadminnet/fastadmin-addons": "self.version"
+    },
+    "conflict": {
+        "fastadminnet/fastadmin-addons": "*"
     }
 }
