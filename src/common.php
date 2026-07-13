@@ -48,8 +48,8 @@ Hook::add('app_init', function () {
         return;
     }
     // 当debug时不缓存配置
-    $config = App::$debug ? [] : Cache::get('addons', []);
-    if (empty($config)) {
+    $config = App::$debug ? null : Cache::get('addons', null);
+    if ($config === null) {
         $config = get_addon_autoload_config();
         Cache::set('addons', $config);
     }
@@ -96,8 +96,8 @@ Hook::add('app_init', function () {
     }
 
     // 获取系统配置
-    $hooks = App::$debug ? [] : Cache::get('hooks', []);
-    if (empty($hooks)) {
+    $hooks = App::$debug ? null : Cache::get('hooks', null);
+    if ($hooks === null) {
         $hooks = (array)Config::get('addons.hooks');
         // 初始化钩子
         foreach ($hooks as $key => $values) {
