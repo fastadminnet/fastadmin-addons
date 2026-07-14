@@ -423,6 +423,18 @@ function addon_url($url, $vars = [], $suffix = true, $domain = false)
             array_walk($params, function ($value, $key) use (&$val) {
                 $val = str_replace("[{$key}]", $value, $val);
             });
+            $segments = explode('/', $val);
+            $filteredSegments = [];
+            foreach ($segments as $segment) {
+                // 如果当前段是可选参数占位符（形如 [:name]）且未被替换（仍保留原样），则移除该段
+                if (preg_match('/^\[:([^]]+)\]$/', $segment)) {
+                    continue; // 未提供该参数，直接跳过
+                }
+                $filteredSegments[] = $segment;
+            }
+            // 重新组合路径，并清理可能出现的连续斜杠
+            $val = implode('/', $filteredSegments);
+            $val = preg_replace('#/{2,}#', '/', $val);
             $val = str_replace(['^', '$'], '', $val);
             if (substr($val, -1) === '/') {
                 $suffix = false;
