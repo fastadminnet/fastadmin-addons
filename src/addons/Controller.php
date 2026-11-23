@@ -83,7 +83,7 @@ class Controller extends \think\Controller
         $dispatch = $this->request->dispatch();
         $var = isset($dispatch['var']) ? $dispatch['var'] : [];
         $var = array_merge($param, $var);
-        if (isset($dispatch['method']) && substr($dispatch['method'][0], 0, 7) == "\\addons") {
+        if (isset($dispatch['method']) && substr($dispatch['method'][0] ?? '', 0, 7) == "\\addons") {
             $arr = explode("\\", $dispatch['method'][0]);
             $addon = strtolower($arr[2]);
             $controller = strtolower(end($arr));
@@ -170,7 +170,7 @@ class Controller extends \think\Controller
 
         // 上传信息配置后
         Hook::listen("upload_config_init", $upload);
-        Config::set('upload', array_merge(Config::get('upload'), $upload));
+        Config::set('upload', array_merge((array)Config::get('upload'), $upload));
 
         // 加载当前控制器语言包
         $this->assign('site', $site);

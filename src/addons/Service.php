@@ -11,6 +11,7 @@ use PhpZip\ZipFile;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use think\Cache;
+use think\Config;
 use think\Db;
 use think\Exception;
 use think\Log;
@@ -78,13 +79,13 @@ class Service
             if (substr($content, 0, 1) === '{') {
                 $json = (array)json_decode($content, true);
                 //如果传回的是一个下载链接,则再次下载
-                if ($json['data'] && isset($json['data']['url'])) {
+                if (!empty($json['data']['url'])) {
                     $response = $client->get($json['data']['url']);
                     $body = $response->getBody();
                     $content = $body->getContents();
                 } else {
                     //下载返回错误，抛出异常
-                    throw new AddonException($json['msg'], $json['code'], $json['data']);
+                    throw new AddonException($json['msg'] ?? '', $json['code'] ?? 0, $json['data'] ?? '');
                 }
             }
         } catch (TransferException $e) {
@@ -399,7 +400,7 @@ EOD;
         $file = self::getExtraAddonsFile();
 
         $config = get_addon_autoload_config(true);
-        if ($config['autoload']) {
+        if (!empty($config['autoload'])) {
             return;
         }
 
@@ -464,7 +465,7 @@ EOD;
 
         Db::startTrans();
         try {
-            if (!$info['state']) {
+            if (empty($info['state'])) {
                 $info['state'] = 1;
                 set_addon_info($name, $info);
             }
@@ -755,7 +756,7 @@ EOD;
     public static function upgrade($name, $extend = [], $tmpFile = false)
     {
         $info = get_addon_info($name);
-        if ($info['state']) {
+        if (!empty($info['state'])) {
             throw new Exception(__('Please disable addon first'));
         }
         $config = get_addon_config($name);
@@ -1090,12 +1091,13 @@ EOD;
      */
     public static function getClient()
     {
+        $config = Config::get('addons.client') ?: [];
         $options = [
             'base_uri'        => self::getServerUrl(),
-            'timeout'         => 30,
-            'connect_timeout' => 30,
-            'verify'          => false,
-            'http_errors'     => false,
+            'timeout'         => $config['timeout'] ?? 30,
+            'connect_timeout' => $config['connect_timeout'] ?? 10,
+            'verify'          => true,
+            'http_errors'     => $config['http_errors'] ?? true,
             'headers'         => [
                 'X-REQUESTED-WITH' => 'XMLHttpRequest',
                 'Referer'          => dirname(request()->root(true)),

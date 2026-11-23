@@ -11,6 +11,12 @@ use think\Exception;
 class AddonException extends Exception
 {
 
+    /**
+     * 附加数据
+     * @var mixed
+     */
+    public $data = '';
+
     public function __construct($message, $code = 0, $data = '')
     {
         $this->message  = $message;

@@ -224,7 +224,7 @@ function get_addon_autoload_config($truncate = false)
     }
 
     foreach ($orderedAddons as $name => $addon) {
-        if (!$addon['state']) {
+        if (empty($addon['state'])) {
             continue;
         }
 
@@ -277,7 +277,7 @@ function get_addon_autoload_config($truncate = false)
  */
 function get_addon_class($name, $type = 'hook', $class = null)
 {
-    $name = Loader::parseName($name);
+    $name = Loader::parseName((string)$name);
     // 处理多级控制器情况
     if (!is_null($class) && strpos($class, '.')) {
         $class = explode('.', $class);
@@ -411,7 +411,7 @@ function addon_url($url, $vars = [], $suffix = true, $domain = false)
     $val = "@addons/{$url}";
     $config = get_addon_config($addon);
     $dispatch = think\Request::instance()->dispatch();
-    $indomain = isset($dispatch['var']['indomain']) && $dispatch['var']['indomain'] && $dispatch['var']['addon'] == $addon ? true : false;
+    $indomain = isset($dispatch['var']['indomain']) && $dispatch['var']['indomain'] && ($dispatch['var']['addon'] ?? '') == $addon ? true : false;
     //优先取插件配置中的domain，没有的情况下取全局的域名前缀配置
     $domainprefix = $config && isset($config['domain']) && $config['domain'] ? $config['domain'] : Config::get('addons.domain');
     $domain = $domainprefix && Config::get('url_domain_deploy') ? $domainprefix : $domain;
@@ -460,6 +460,9 @@ function set_addon_info($name, $array)
 {
     $file = ADDON_PATH . $name . DS . 'info.ini';
     $addon = get_addon_instance($name);
+    if (!$addon) {
+        throw new Exception('Addon not exists');
+    }
     $array = $addon->setInfo($name, $array);
     if (!isset($array['name']) || !isset($array['title']) || !isset($array['version'])) {
         throw new Exception("插件配置写入失败");
@@ -475,7 +478,6 @@ function set_addon_info($name, $array)
             $res[] = "$key = " . (is_numeric($val) ? $val : $val);
         }
     }
-    Hook::listen($name . '_info_before_write', $array);
     if (file_put_contents($file, implode("\n", $res) . "\n", LOCK_EX)) {
         //清空当前配置缓存
         Config::set($name, null, 'addoninfo');
