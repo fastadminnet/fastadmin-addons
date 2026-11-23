@@ -71,18 +71,23 @@ class Service
     {
         $addonsTempDir = self::getAddonsBackupDir();
         $tmpFile = $addonsTempDir . $name . ".zip";
+        $signature = '';
         try {
             $client = self::getClient();
             $response = $client->get('/addon/download', ['query' => array_merge(['name' => $name], $extend)]);
             $body = $response->getBody();
             $content = $body->getContents();
+            $signature = (string)$response->getHeaderLine('X-Addon-Signature');
             if (substr($content, 0, 1) === '{') {
                 $json = (array)json_decode($content, true);
                 //如果传回的是一个下载链接,则再次下载
-                if (!empty($json['data']['url'])) {
+                if (!empty($json['data']) && isset($json['data']['url'])) {
+                    // [SECURITY] 仅允许跟随到受信域名，避免响应中的任意 URL 把流量引向攻击者
+                    Security::assertTrustedUrl($json['data']['url']);
                     $response = $client->get($json['data']['url']);
                     $body = $response->getBody();
                     $content = $body->getContents();
+                    $signature = (string)($json['data']['sign'] ?? $json['data']['signature'] ?? $response->getHeaderLine('X-Addon-Signature'));
                 } else {
                     //下载返回错误，抛出异常
                     throw new AddonException($json['msg'] ?? '', $json['code'] ?? 0, $json['data'] ?? '');
@@ -95,9 +100,13 @@ class Service
         if ($write = fopen($tmpFile, 'w')) {
             fwrite($write, $content);
             fclose($write);
-            return $tmpFile;
+        } else {
+            throw new Exception("No permission to write temporary files");
         }
-        throw new Exception("No permission to write temporary files");
+
+        // [SECURITY] 解压与实例化之前强制校验插件包完整性/真实性
+        Security::verifyPackage($tmpFile, $name, $signature, $extend);
+        return $tmpFile;
     }
 
     /**
@@ -110,7 +119,7 @@ class Service
      */
     public static function unzip($name, $file = '')
     {
-        if (!$name) {
+        if (!$name || !preg_match("/^[a-zA-Z0-9]+$/", $name)) {
             throw new Exception('Invalid parameters');
         }
         $addonsBackupDir = self::getAddonsBackupDir();
@@ -124,6 +133,9 @@ class Service
             $zip->close();
             throw new Exception('Unable to open the zip file');
         }
+
+        // [SECURITY] 阻止 zip-slip / 绝对路径写入
+        Security::assertSafeArchive($zip);
 
         $dir = self::getAddonDir($name);
         if (!is_dir($dir)) {
@@ -188,7 +200,7 @@ class Service
             // 判断新插件是否存在
             $newAddonDir = self::getAddonDir($name);
             if (!$force && is_dir($newAddonDir)) {
-                throw new AddonException('Addon already exists', -1, ['name' => $name, 'title' => $config['title']]);
+                throw new AddonException('Addon already exists', -1, ['name' => $name, 'title' => $config['title'] ?? '']);
             }
 
             // 读取旧版本号
@@ -199,7 +211,7 @@ class Service
             }
 
             $extend['oldversion'] = $oldversion;
-            $extend['version'] = $config['version'];
+            $extend['version'] = $config['version'] ?? '';
 
             // 追加MD5和Data数据
             $extend['md5'] = md5_file($tmpFile);
@@ -352,6 +364,8 @@ class Service
                 if (substr(trim($line), -1, 1) == ';') {
                     $templine = str_ireplace('__PREFIX__', config('database.prefix'), $templine);
                     $templine = str_ireplace('INSERT INTO ', 'INSERT IGNORE INTO ', $templine);
+                    // [SECURITY] 仅执行受控的迁移语句，阻断文件/权限/存储过程等危险构造
+                    Security::assertSafeSql($templine);
                     try {
                         Db::getPdo()->exec($templine);
                     } catch (\PDOException $e) {
@@ -436,6 +450,9 @@ EOD;
 
         // 远程下载插件
         $tmpFile = $tmpFile ?: Service::download($name, $extend);
+
+        // [SECURITY] 解压/实例化之前强制验包（本地安装包同样覆盖）
+        Security::verifyPackage($tmpFile, $name, '', $extend);
 
         $addonDir = self::getAddonDir($name);
 
@@ -593,6 +610,8 @@ EOD;
         // 复制application和public到全局
         foreach (self::getCheckDirs() as $k => $dir) {
             if (is_dir($addonDir . $dir)) {
+                // [SECURITY] 禁止把插件 public/ 中的可执行脚本复制到站点根目录
+                Security::assertSafePublicDir($addonDir . $dir, $dir);
                 copydirs($addonDir . $dir, ROOT_PATH . $dir);
             }
         }
@@ -767,6 +786,9 @@ EOD;
         // 远程下载插件(如果为本地文件则使用本地文件)
         $tmpFile = $tmpFile ? $tmpFile : Service::download($name, $extend);
 
+        // [SECURITY] 解压/动态生成升级类之前强制验包
+        Security::verifyPackage($tmpFile, $name, '', $extend);
+
         // 备份插件文件
         Service::backup($name);
 
@@ -813,7 +835,12 @@ EOD;
             $sourceFile = $addonDir . $addonName . ".php";
             $destFile = $addonDir . $addonName . "Upgrade.php";
 
-            $classContent = str_replace("class {$addonName} extends", "class {$addonName}Upgrade extends", file_get_contents($sourceFile));
+            $sourceContent = @file_get_contents($sourceFile);
+            if ($sourceContent === false) {
+                throw new Exception("Addon file not found: {$addonName}.php");
+            }
+
+            $classContent = str_replace("class {$addonName} extends", "class {$addonName}Upgrade extends", $sourceContent);
 
             //创建临时的类文件
             file_put_contents($destFile, $classContent);
@@ -982,7 +1009,8 @@ EOD;
      */
     public static function getRootDomain($domain)
     {
-        $host = strtolower(trim($domain));
+        // PHP8.1 起 trim() 不接受 null（CLI 下 request()->host() 会返回 null）
+        $host = strtolower(trim((string)$domain));
         $hostArr = explode('.', $host);
         $hostCount = count($hostArr);
         $cnRegex = '/\w+\.(gov|org|ac|mil|net|edu|com|bj|tj|sh|cq|he|sx|nm|ln|jl|hl|js|zj|ah|fj|jx|sd|ha|hb|hn|gd|gx|hi|sc|gz|yn|xz|sn|gs|qh|nx|xj|tw|hk|mo)\.cn$/i';
@@ -1104,6 +1132,8 @@ EOD;
                 'User-Agent'       => 'FastAddon',
             ]
         ];
+        // [SECURITY] 应用自定义 CA / SPKI 证书固定 / 限制重定向
+        $options = Security::applyTransportOptions($options);
         static $client;
         if (empty($client)) {
             $client = new Client($options);
