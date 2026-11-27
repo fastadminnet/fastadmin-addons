@@ -72,27 +72,55 @@ class Service
         $addonsTempDir = self::getAddonsBackupDir();
         $tmpFile = $addonsTempDir . $name . ".zip";
         $signature = '';
+        $keyid = '';
+        $manifest = '';
         try {
             $client = self::getClient();
+            Security::resetHopHeaders();
             $response = $client->get('/addon/download', ['query' => array_merge(['name' => $name], $extend)]);
             $body = $response->getBody();
             $content = $body->getContents();
-            $signature = (string)$response->getHeaderLine('X-Addon-Signature');
+
             if (substr($content, 0, 1) === '{') {
                 $json = (array)json_decode($content, true);
                 //如果传回的是一个下载链接,则再次下载
                 if (!empty($json['data']) && isset($json['data']['url'])) {
-                    // [SECURITY] 仅允许跟随到受信域名，避免响应中的任意 URL 把流量引向攻击者
+                    // [SECURITY] 仅允许跟随到受信域名
                     Security::assertTrustedUrl($json['data']['url']);
                     $response = $client->get($json['data']['url']);
                     $body = $response->getBody();
                     $content = $body->getContents();
-                    $signature = (string)($json['data']['sign'] ?? $json['data']['signature'] ?? $response->getHeaderLine('X-Addon-Signature'));
+
+                    $signature = (string)$response->getHeaderLine('X-Addon-Signature');
+                    $keyid = (string)$response->getHeaderLine('X-Addon-Keyid');
+                    $manifest = (string)$response->getHeaderLine('X-Addon-Manifest');
+
+                    $signature = (string)($json['data']['signature'] ?? $signature);
+                    $keyid = (string)($json['data']['keyid'] ?? $keyid);
+                    $manifest = (string)($json['data']['manifest'] ?? $manifest);
                 } else {
                     //下载返回错误，抛出异常
                     throw new AddonException($json['msg'] ?? '', $json['code'] ?? 0, $json['data'] ?? '');
                 }
             }
+
+            // 兼容 /addon/download 直接返回二进制包的形态：签名随本次响应头下发
+            if ($signature === '') {
+                $signature = (string)$response->getHeaderLine('X-Addon-Signature');
+            }
+            if ($keyid === '') {
+                $keyid = (string)$response->getHeaderLine('X-Addon-Keyid');
+            }
+            if ($manifest === '') {
+                $manifest = (string)$response->getHeaderLine('X-Addon-Manifest');
+            }
+
+            // 兼容 /addon/download 以 3xx 重定向到资源地址的形态：签名挂在重定向响应头里，
+            // 最终响应（CDN 静态文件）通常不带签名头，此处按需回填
+            $hop = Security::hopHeaders();
+            $signature = $signature !== '' ? $signature : (string)($hop['signature'] ?? '');
+            $keyid = $keyid !== '' ? $keyid : (string)($hop['keyid'] ?? '');
+            $manifest = $manifest !== '' ? $manifest : (string)($hop['manifest'] ?? '');
         } catch (TransferException $e) {
             throw new Exception("Addon package download failed");
         }
@@ -105,7 +133,11 @@ class Service
         }
 
         // [SECURITY] 解压与实例化之前强制校验插件包完整性/真实性
-        Security::verifyPackage($tmpFile, $name, $signature, $extend);
+        // 服务端返回 keyid + base64(清单) 时组装为签名信封，交由 verifyManifest() 做密钥选择与清单约束校验
+        $envelope = Security::buildEnvelopeEncoded($signature, $keyid, $manifest);
+        Security::verifyPackage($tmpFile, $name, $envelope, $extend);
+        // 签名不落盘：校验通过后仅在当前请求内登记，供 install()/upgrade() 的二次校验复用
+        Security::registerSignature($tmpFile, $envelope);
         return $tmpFile;
     }
 
@@ -222,10 +254,27 @@ class Service
             $mysqlVersion = Db::query('SELECT version() AS version');
             $extend['mysqlversion'] = $mysqlVersion[0]['version'] ?? '';
 
+            // 补全签名清单所需参数：服务端据此回传本包签名（keyid/manifest/sign），
+            // 使本地安装与远程安装共用同一套清单验签
+            $extend['sha256'] = hash_file('sha256', $tmpFile);
+
             $params = array_merge($config, $extend);
 
             // 压缩包验证、版本依赖判断，应用插件需要授权使用，移除或绕过授权验证，保留追究法律责任的权利
-            Service::valid($params);
+            // 验证通过后服务端在 data 段回传本包签名（manifest 恒为 base64），客户端据此完成强制验签
+            $validData = [];
+            Service::valid($params, $validData);
+            $envelope = Security::buildEnvelopeEncoded(
+                (string)($validData['signature'] ?? ''),
+                (string)($validData['keyid'] ?? ''),
+                (string)($validData['manifest'] ?? '')
+            );
+            if ($envelope !== '') {
+                // 签名只在当前请求内登记，供 install()/upgrade() 的二次校验复用
+                Security::registerSignature($tmpFile, $envelope);
+            }
+            // 标记：本地上传安装上下文，供 Security::verifyPackage() 在无签名时取用官网签发的信封
+            $extend['local_endorsed'] = true;
 
             if (!$oldversion) {
                 // 新装模式
@@ -253,15 +302,24 @@ class Service
 
     /**
      * 验证压缩包、依赖验证
-     * @param array $params
+     *
+     * 服务端在验证通过后于 data 段回传本包签名，本地安装据此做强制验签
+     * （与远程下载返回的签名结构一致，客户端共用同一套清单验签）：
+     *   data.signature              清单签名（base64）
+     *   data.keyid                  签发密钥标识
+     *   data.manifest               签名清单原文（addon-manifest-v1，需 base64）
+     *
+     * @param array $params   验证参数（name/version/md5/sha256/data/faversion/phpversion 等）
+     * @param array $response 出参：服务端返回的 data 段
      * @return bool
      * @throws Exception
      */
-    public static function valid($params = [])
+    public static function valid($params = [], &$response = null)
     {
         $json = self::sendRequest('/addon/valid', $params, 'POST');
         if ($json && isset($json['code'])) {
             if ($json['code']) {
+                $response = isset($json['data']) && is_array($json['data']) ? $json['data'] : [];
                 return true;
             } else {
                 throw new Exception($json['msg'] ?? "Invalid addon package");
@@ -356,12 +414,16 @@ class Service
             $lines = file($sqlFile);
             $templine = '';
             foreach ($lines as $line) {
-                if (substr($line, 0, 2) == '--' || $line == '' || substr($line, 0, 2) == '/*') {
+                $trimmed = ltrim($line);
+                // 跳过空行与各类注释行（-- / # / /*），否则注释会被拼进下一条语句导致白名单误判
+                if (trim($line) === '' || substr($trimmed, 0, 2) == '--'
+                    || substr($trimmed, 0, 1) == '#' || substr($trimmed, 0, 2) == '/*') {
                     continue;
                 }
 
                 $templine .= $line;
-                if (substr(trim($line), -1, 1) == ';') {
+                // 兼容 “;  # 行尾注释” 的写法
+                if (substr(trim($line), -1, 1) == ';' || preg_match('/;\s*#.*$/', $line)) {
                     $templine = str_ireplace('__PREFIX__', config('database.prefix'), $templine);
                     $templine = str_ireplace('INSERT INTO ', 'INSERT IGNORE INTO ', $templine);
                     // [SECURITY] 仅执行受控的迁移语句，阻断文件/权限/存储过程等危险构造
@@ -427,6 +489,22 @@ EOD;
     }
 
     /**
+     * 补全运行环境参数
+     *
+     * @param array $extend 扩展参数
+     * @return array
+     */
+    protected static function addEnvironmentParams(array $extend = [])
+    {
+        $extend['domain'] = request()->host(true);
+        $extend['phpversion'] = PHP_VERSION;
+        $extend['thinkversion'] = defined('THINK_VERSION') ? THINK_VERSION : '';
+        $mysqlVersion = Db::query('SELECT version() AS version');
+        $extend['mysqlversion'] = $mysqlVersion[0]['version'] ?? '';
+        return $extend;
+    }
+
+    /**
      * 安装插件
      *
      * @param string  $name    插件名称
@@ -443,15 +521,13 @@ EOD;
             throw new Exception('Addon already exists');
         }
 
-        $extend['domain'] = request()->host(true);
-        $extend['phpversion'] = PHP_VERSION;
-        $mysqlVersion = Db::query('SELECT version() AS version');
-        $extend['mysqlversion'] = $mysqlVersion[0]['version'] ?? '';
+        $extend = self::addEnvironmentParams($extend);
 
         // 远程下载插件
         $tmpFile = $tmpFile ?: Service::download($name, $extend);
 
         // [SECURITY] 解压/实例化之前强制验包（本地安装包同样覆盖）
+        // 远程安装复用 download() 在内存中登记的签名；本地安装包无签名，由 local_endorsed 兜底
         Security::verifyPackage($tmpFile, $name, '', $extend);
 
         $addonDir = self::getAddonDir($name);
@@ -513,6 +589,24 @@ EOD;
     }
 
     /**
+     * 是否禁止卸载插件
+     *
+     * 关闭调试模式（生产环境）时默认禁止卸载，避免误删插件文件与数据表；
+     * 可通过 fastadmin.addon_uninstall_require_debug = false 关闭该限制。
+     *
+     * @return boolean
+     */
+    public static function isUninstallDisabled()
+    {
+        $requireDebug = config('fastadmin.addon_uninstall_require_debug');
+        if ($requireDebug === null) {
+            // 未配置时按“需要调试模式”处理，安全优先
+            $requireDebug = true;
+        }
+        return (bool)$requireDebug && !config('app_debug');
+    }
+
+    /**
      * 卸载插件
      *
      * @param string  $name
@@ -522,6 +616,10 @@ EOD;
      */
     public static function uninstall($name, $force = false)
     {
+        if (self::isUninstallDisabled()) {
+            throw new Exception('Addon uninstall requires debug mode');
+        }
+
         if (!$name || !is_dir(ADDON_PATH . $name)) {
             throw new Exception('Addon not exists');
         }
@@ -783,10 +881,21 @@ EOD;
             //备份配置
         }
 
+        // 升级链路必须携带旧版本号，服务端据此判断增量脚本与升级关系；
+        // 调用方（如命令行）未传时回退为当前已安装版本
+        if (!isset($extend['oldversion']) || $extend['oldversion'] === '') {
+            $extend['oldversion'] = $info['version'] ?? '';
+        }
+
+        // 与 install() 保持一致：补全 domain/phpversion/mysqlversion
+        // 否则 /addon/download 拿不到域名与环境信息，服务端会判为无效升级请求
+        $extend = self::addEnvironmentParams($extend);
+
         // 远程下载插件(如果为本地文件则使用本地文件)
         $tmpFile = $tmpFile ? $tmpFile : Service::download($name, $extend);
 
         // [SECURITY] 解压/动态生成升级类之前强制验包
+        // 远程升级复用 download() 在内存中登记的签名；本地升级包无签名，由 local_endorsed 兜底
         Security::verifyPackage($tmpFile, $name, '', $extend);
 
         // 备份插件文件
@@ -837,7 +946,7 @@ EOD;
 
             $sourceContent = @file_get_contents($sourceFile);
             if ($sourceContent === false) {
-                throw new Exception("Addon file not found: {$addonName}.php");
+                throw new Exception(__('Addon file not found: %s.php', $addonName));
             }
 
             $classContent = str_replace("class {$addonName} extends", "class {$addonName}Upgrade extends", $sourceContent);
@@ -862,8 +971,13 @@ EOD;
         // 刷新
         Service::refresh();
 
-        //必须变更版本号
-        $info['version'] = $extend['version'] ?? $info['version'];
+        //必须变更版本号：优先用调用方指定的目标版本，缺失时回读解压后的 info.ini
+        $version = (string)($extend['version'] ?? '');
+        if ($version === '') {
+            $installedInfo = (array)get_addon_info($name);
+            $version = (string)($installedInfo['version'] ?? '');
+        }
+        $info['version'] = $version !== '' ? $version : $info['version'];
 
         $info['config'] = get_addon_config($name) ? 1 : 0;
         $info['bootstrap'] = is_file(Service::getBootstrapFile($name));
